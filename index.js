@@ -2,7 +2,6 @@ require("dotenv").config();
 const { OpenAI } = require("langchain/llms/openai");
 const { loadQAStuffChain } = require("langchain/chains");
 const { HuggingFaceInferenceEmbeddings } = require("langchain/embeddings/hf");
-const { FaissStore } = require("langchain/vectorstores/faiss");
 const { RecursiveCharacterTextSplitter } = require("langchain/text_splitter");
 const { PDFLoader } = require("langchain/document_loaders/fs/pdf");
 const { MongoClient } = require("mongodb");
@@ -87,25 +86,6 @@ const upload = multer({ storage: storage });
 
 const getFilename = (filePath) => path.basename(filePath);
 
-// Load documents and create embeddings
-async function createEmbeddings(filePath) {
-  const textSplitter = new RecursiveCharacterTextSplitter({
-    chunkSize: 500,
-    chunkOverlap: 50,
-    lengthFunction: (doc) => doc.length,
-  });
-
-  const loader = new PDFLoader(filePath, {
-    splitPages: true,
-    textSplitter: textSplitter,
-  });
-
-  const documents = await loader.load();
-
-  const vectorStore = await FaissStore.fromDocuments(documents, hfEmbeddings);
-  await vectorStore.save(getFilename(filePath) + "_index");
-  return vectorStore;
-}
 
 async function createEmbeddingsRedis(filePath) {
   const textSplitter = new RecursiveCharacterTextSplitter({
@@ -141,22 +121,6 @@ async function loadRedisVectorStore(indexName) {
   return vectorStore;
 }
 
-// Load FaissStore or create if it doesn't exist
-async function loadVectorStore(file) {
-  let vectorStore;
-
-  const document = await Document.findOne({
-    file: file,
-  }).exec();
-
-  try {
-    vectorStore = await FaissStore.load(document.index_id, hfEmbeddings);
-  } catch {
-    //vectorStore = await createEmbeddings(filePath);
-  }
-
-  return vectorStore;
-}
 
 async function askPDF(vectorStore, query) {
   const llm = new OpenAI({});
@@ -165,51 +129,11 @@ async function askPDF(vectorStore, query) {
   
   const relevantDocs = await vectorStore.similaritySearch(query, 5);
 
-  console.log(relevantDocs)
   result = await chain.call({
     input_documents: relevantDocs,
     question: query,
   });
   return result;
-}
-
-// Express route to add a file
-app.post("/files", upload.single("file"), uploadFile);
-async function uploadFile(req, res) {
-  // Extract necessary information from the request body
-  const { room_ids, roles_allowed, users_allowed } = req.body;
-
-  // Parse the comma-separated strings into arrays
-  const parsedRolesAllowed = roles_allowed.split(",");
-  const parsedUsersAllowed = users_allowed.split(",");
-  const parsedRoomIds = room_ids.split(",");
-
-  const fileName = req.file.filename;
-
-  const id = uuidv4();
-
-  try {
-    createEmbeddingsRedis(fileName);
-
-    // Perform file saving logic here
-    // Use the extracted information to create a new document in MongoDB
-
-    const document = new Document({
-      id,
-      file: fileName,
-      index_id: getFilename(fileName),
-      room_ids: parsedRoomIds,
-      roles_allowed: parsedRolesAllowed,
-      users_allowed: parsedUsersAllowed,
-    });
-
-    await document.save();
-
-    res.status(200).json({ message: "File added successfully", id });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Failed to save file" });
-  }
 }
 
 /**
@@ -269,6 +193,48 @@ async function authorizeUser(req, res, next) {
     res.status(401).json({ message: "Unauthorized" });
   }
 }
+
+
+// Express route to add a file
+app.post("/files", upload.single("file"), uploadFile);
+async function uploadFile(req, res) {
+  // Extract necessary information from the request body
+  const { room_ids, roles_allowed, users_allowed } = req.body;
+
+  // Parse the comma-separated strings into arrays
+  const parsedRolesAllowed = roles_allowed.split(",");
+  const parsedUsersAllowed = users_allowed.split(",");
+  const parsedRoomIds = room_ids.split(",");
+
+  const fileName = req.file.filename;
+
+  const id = uuidv4();
+
+  try {
+    createEmbeddingsRedis(fileName);
+
+    // Perform file saving logic here
+    // Use the extracted information to create a new document in MongoDB
+
+    const document = new Document({
+      id,
+      file: fileName,
+      index_id: getFilename(fileName),
+      room_ids: parsedRoomIds,
+      roles_allowed: parsedRolesAllowed,
+      users_allowed: parsedUsersAllowed,
+    });
+
+    await document.save();
+
+    res.status(200).json({ message: "File added successfully", id });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Failed to save file" });
+  }
+}
+
+
 
 // Express route to perform similarity search with authorization
 app.post("/files/ask", authorizeUser, async (req, res) => {
