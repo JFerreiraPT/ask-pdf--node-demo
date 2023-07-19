@@ -1,0 +1,107 @@
+{
+	"info": {
+		"_postman_id": "5ddff1e4-2dc5-4b74-963a-fb0ff5b6dbea",
+		"name": "Ask node",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "add file",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "multipart/form-data",
+						"type": "default",
+						"disabled": true
+					}
+				],
+				"body": {
+					"mode": "formdata",
+					"formdata": [
+						{
+							"key": "file",
+							"type": "file",
+							"src": "/Users/joaoferreira/Downloads/Prompt_Engineering_For_ChatGPT_A_Quick_Guide_To_Te.pdf"
+						},
+						{
+							"key": "room_ids",
+							"value": "",
+							"type": "default",
+							"disabled": true
+						},
+						{
+							"key": "room_ids",
+							"value": "12, 14",
+							"type": "default"
+						},
+						{
+							"key": "roles_allowed",
+							"value": "admin, manager",
+							"type": "default"
+						},
+						{
+							"key": "users_allowed",
+							"value": "john, jane",
+							"type": "default"
+						}
+					],
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://localhost:3000/files",
+					"protocol": "http",
+					"host": [
+						"localhost"
+					],
+					"port": "3000",
+					"path": [
+						"files"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "ask",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "multipart/form-data",
+						"type": "default",
+						"disabled": true
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"file\": \"ask_pdf\",\n  \"question\": \"What is the question?\"\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://localhost:3000/files/ask",
+					"protocol": "http",
+					"host": [
+						"localhost"
+					],
+					"port": "3000",
+					"path": [
+						"files",
+						"ask"
+					]
+				}
+			},
+			"response": []
+		}
+	]
+}

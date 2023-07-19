@@ -1,0 +1,27 @@
+{
+  "name": "pdf_reader_node",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@huggingface/inference": "^1.8.0",
+    "@zilliz/milvus2-sdk-node": "^2.2.19",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "faiss-node": "^0.2.2",
+    "graphql": "^16.7.1",
+    "langchain": "^0.0.109",
+    "mongodb": "^5.7.0",
+    "mongoose": "^7.3.4",
+    "multer": "^1.4.5-lts.1",
+    "openai": "^3.3.0",
+    "pdf-parse": "^1.1.1",
+    "pickleparser": "^0.1.0",
+    "weaviate-ts-client": "^1.4.0"
+  }
+}
