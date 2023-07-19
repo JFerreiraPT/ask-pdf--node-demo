@@ -15,6 +15,9 @@ const multer = require("multer");
 const { RedisVectorStore } = require("langchain/vectorstores/redis");
 const { createClient, createCluster } = require("redis");
 
+const { ConversationalRetrievalQAChain } = require("langchain/chains");
+const { BufferMemory } = require("langchain/memory");
+
 const app = express();
 const port = 3000;
 app.use(bodyParser.json());
@@ -84,7 +87,42 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage: storage });
 
+const chainsMap = new Map();
+
 const getFilename = (filePath) => path.basename(filePath);
+
+
+async function getFileChain(filename) {
+  let chain = chainsMap.get(filename);
+
+  if (!chain) {
+
+    const vectorStore = await loadRedisVectorStore(filename);
+
+    const llm = new OpenAI({});
+    chain = ConversationalRetrievalQAChain.fromLLM(
+      llm,
+      vectorStore.asRetriever(),
+      {
+        returnSourceDocuments: true,
+        memory: new BufferMemory({
+          memoryKey: "chat_history",
+          inputKey: "question", // The key for the input to the chain
+          outputKey: "text", // The key for the final conversational output of the chain
+          returnMessages: true, // If using with a chat model (e.g. gpt-3.5 or gpt-4)
+        }),
+        questionGeneratorChainOptions: {
+          llm: llm,
+        },
+      }
+    );
+    
+    chainsMap.set(filename, chain);
+  }
+
+  return chain;
+}
+
 
 
 async function createEmbeddingsRedis(filePath) {
@@ -122,18 +160,11 @@ async function loadRedisVectorStore(indexName) {
 }
 
 
-async function askPDF(vectorStore, query) {
-  const llm = new OpenAI({});
-  const chain = loadQAStuffChain(llm, "stuff");
+async function askPDF(chain, query) {
+  result = await chain.call({ question: query });
 
-  
-  const relevantDocs = await vectorStore.similaritySearch(query, 5);
+  return result.text;
 
-  result = await chain.call({
-    input_documents: relevantDocs,
-    question: query,
-  });
-  return result;
 }
 
 /**
@@ -195,6 +226,7 @@ async function authorizeUser(req, res, next) {
 }
 
 
+
 // Express route to add a file
 app.post("/files", upload.single("file"), uploadFile);
 async function uploadFile(req, res) {
@@ -246,9 +278,9 @@ app.post("/files/ask", authorizeUser, async (req, res) => {
 
     // Wait for the FaissStore to be loaded before performing the search
 
-    const vectorStore = await loadRedisVectorStore(file);
-
-    const results = await askPDF(vectorStore, question);
+    //const vectorStore = await loadRedisVectorStore(file);
+    const chain = await getFileChain(file);
+    const results = await askPDF(chain, question);
 
     res.status(200).json({ results });
   } catch (error) {
