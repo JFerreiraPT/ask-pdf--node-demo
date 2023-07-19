@@ -13,9 +13,19 @@ const path = require("path");
 const bodyParser = require("body-parser");
 const multer = require("multer");
 
+const { RedisVectorStore } = require("langchain/vectorstores/redis");
+const { createClient, createCluster } = require("redis");
+
 const app = express();
 const port = 3000;
 app.use(bodyParser.json());
+
+REDIS_URL = "redis://localhost:6379";
+
+const redisClient = createClient({
+  url: process.env.REDIS_URL ?? "redis://localhost:6379",
+});
+redisClient.connect();
 
 // Initialize FaissStore and HuggingFaceInferenceEmbeddings
 const hfEmbeddings = new HuggingFaceInferenceEmbeddings();
@@ -97,6 +107,40 @@ async function createEmbeddings(filePath) {
   return vectorStore;
 }
 
+async function createEmbeddingsRedis(filePath) {
+  const textSplitter = new RecursiveCharacterTextSplitter({
+    chunkSize: 500,
+    chunkOverlap: 50,
+    lengthFunction: (doc) => doc.length,
+  });
+
+  const loader = new PDFLoader(filePath, {
+    splitPages: true,
+    textSplitter: textSplitter,
+  });
+
+  const documents = await loader.load();
+
+  const vectorStore = await RedisVectorStore.fromDocuments(
+    documents,
+    hfEmbeddings,
+    {
+      redisClient: redisClient,
+      indexName: filePath,
+    }
+  );
+
+  return vectorStore;
+}
+
+async function loadRedisVectorStore(indexName) {
+  const vectorStore = new RedisVectorStore(hfEmbeddings, {
+    redisClient: redisClient,
+    indexName: indexName,
+  });
+  return vectorStore;
+}
+
 // Load FaissStore or create if it doesn't exist
 async function loadVectorStore(file) {
   let vectorStore;
@@ -106,10 +150,7 @@ async function loadVectorStore(file) {
   }).exec();
 
   try {
-    vectorStore = await FaissStore.load(
-      document.index_id,
-      hfEmbeddings
-    );
+    vectorStore = await FaissStore.load(document.index_id, hfEmbeddings);
   } catch {
     //vectorStore = await createEmbeddings(filePath);
   }
@@ -117,19 +158,19 @@ async function loadVectorStore(file) {
   return vectorStore;
 }
 
-
-
 async function askPDF(vectorStore, query) {
   const llm = new OpenAI({});
   const chain = loadQAStuffChain(llm, "stuff");
 
-  const relevantDocs = await vectorStore.similaritySearch(query, 5);
   
+  const relevantDocs = await vectorStore.similaritySearch(query, 5);
+
+  console.log(relevantDocs)
   result = await chain.call({
     input_documents: relevantDocs,
     question: query,
   });
-  return result
+  return result;
 }
 
 // Express route to add a file
@@ -148,7 +189,7 @@ async function uploadFile(req, res) {
   const id = uuidv4();
 
   try {
-    createEmbeddings(fileName);
+    createEmbeddingsRedis(fileName);
 
     // Perform file saving logic here
     // Use the extracted information to create a new document in MongoDB
@@ -156,7 +197,7 @@ async function uploadFile(req, res) {
     const document = new Document({
       id,
       file: fileName,
-      index_id: getFilename(fileName) + "_index",
+      index_id: getFilename(fileName),
       room_ids: parsedRoomIds,
       roles_allowed: parsedRolesAllowed,
       users_allowed: parsedUsersAllowed,
@@ -179,13 +220,12 @@ async function checkAccessRights(file, user) {
   const allowedRoles = await getRolesAllowedForFile(file); // Retrieve allowed roles for the file from your database
   const userRoles = getUserRoles(user); // Retrieve roles of the user from your database
 
-
   const allowed = await isUserAllowedForFile(file, user);
 
   // Check if the user's roles intersect with the allowed roles
   const hasRoleAccess = userRoles.some((role) => allowedRoles.includes(role));
 
-  console.log(hasRoleAccess, allowed)
+  console.log(hasRoleAccess, allowed);
 
   return hasRoleAccess || allowed;
 }
@@ -195,15 +235,15 @@ function getUserRoles(user) {
 }
 
 async function getRolesAllowedForFile(file) {
-    try {
-      const documents = await Document.find({ file: file });
-      const rolesAllowed = documents.map((doc) => doc.roles_allowed);
-      return rolesAllowed.length > 0 ? rolesAllowed[0] : [];
-    } catch (error) {
-      console.error(error);
-      return [];
-    }
+  try {
+    const documents = await Document.find({ file: file });
+    const rolesAllowed = documents.map((doc) => doc.roles_allowed);
+    return rolesAllowed.length > 0 ? rolesAllowed[0] : [];
+  } catch (error) {
+    console.error(error);
+    return [];
   }
+}
 
 async function isUserAllowedForFile(file, user) {
   const document = await Document.findOne({
@@ -220,7 +260,7 @@ async function authorizeUser(req, res, next) {
   // You can use req.headers or req.session to retrieve user information
 
   const { file } = req.body;
-  const user  = { id: "1", name: "JoaoF" };
+  const user = { id: "1", name: "JoaoF" };
 
   const hasAccess = await checkAccessRights(file, user);
   if (hasAccess) {
@@ -240,8 +280,7 @@ app.post("/files/ask", authorizeUser, async (req, res) => {
 
     // Wait for the FaissStore to be loaded before performing the search
 
-    const vectorStore = await loadVectorStore(file);
-
+    const vectorStore = await loadRedisVectorStore(file);
 
     const results = await askPDF(vectorStore, question);
 
