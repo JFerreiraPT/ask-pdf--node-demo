@@ -18,6 +18,10 @@ const { createClient, createCluster } = require("redis");
 const { ConversationalRetrievalQAChain } = require("langchain/chains");
 const { BufferMemory } = require("langchain/memory");
 
+const TextLoader = require("langchain/document_loaders/fs/text");
+
+const { Blob } = require("buffer");
+
 const app = express();
 const port = 3000;
 app.use(bodyParser.json());
@@ -74,35 +78,21 @@ const Document = mongoose.model(
 );
 
 // Configure multer storage
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, ""); // Specify the directory where the uploaded files will be stored
-  },
-  filename: function (req, file, cb) {
-    const originalFileName = file.originalname;
-    const fileName = `${originalFileName}`;
-    cb(null, fileName); // Set the file name
-  },
-});
-
+const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
 const chainsMap = new Map();
 
-const getFilename = (filePath) => path.basename(filePath);
-
-
-async function getFileChain(filename) {
-  let chain = chainsMap.get(filename);
+async function getFileChain(roomId) {
+  let chain = chainsMap.get(roomId);
 
   if (!chain) {
-
-    const vectorStore = await loadRedisVectorStore(filename);
+    const vectorStore = await loadRedisVectorStore("IM");
 
     const llm = new OpenAI({});
     chain = ConversationalRetrievalQAChain.fromLLM(
       llm,
-      vectorStore.asRetriever(),
+      vectorStore.asRetriever(5),
       {
         returnSourceDocuments: true,
         memory: new BufferMemory({
@@ -116,35 +106,72 @@ async function getFileChain(filename) {
         },
       }
     );
-    
-    chainsMap.set(filename, chain);
+
+    chainsMap.set(roomId, chain);
   }
 
   return chain;
 }
 
-
-
-async function createEmbeddingsRedis(filePath) {
+async function createEmbeddingsRedis(metaInfo) {
   const textSplitter = new RecursiveCharacterTextSplitter({
     chunkSize: 500,
     chunkOverlap: 50,
     lengthFunction: (doc) => doc.length,
   });
 
-  const loader = new PDFLoader(filePath, {
-    splitPages: true,
-    textSplitter: textSplitter,
-  });
+  const file = metaInfo.file;
+  const buff = Buffer.from(file.buffer);
+  const blob = new Blob([buff]);
+
+  let loader;
+
+  switch (file.mimetype) {
+    case "application/pdf":
+      loader = new PDFLoader(blob, {
+        splitPages: true,
+        textSplitter: textSplitter,
+      });
+      break;
+    case "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+      loader = new DocxLoader(blob, {
+        splitPages: true,
+        textSplitter: textSplitter,
+      });
+      break;
+    case "text/csv":
+      loader = new CSVLoader(blob, {
+        splitPages: true,
+        textSplitter: textSplitter,
+      });
+      break;
+    case "txt":
+      loader = new TextLoader(blob, {
+        splitPages: true,
+        textSplitter: textSplitter,
+      });
+      break;
+    default:
+      throw new Error("File not supported");
+  }
 
   const documents = await loader.load();
+
+
+  documents.forEach((doc) => {
+    // Existing metadata
+    const existingMeta = doc.metadata || {};
+
+    // Merge with new metadata
+    doc.metadata = { ...existingMeta, ...metaInfo };
+  });
 
   const vectorStore = await RedisVectorStore.fromDocuments(
     documents,
     hfEmbeddings,
     {
       redisClient: redisClient,
-      indexName: filePath,
+      indexName: "IM",
     }
   );
 
@@ -159,12 +186,10 @@ async function loadRedisVectorStore(indexName) {
   return vectorStore;
 }
 
-
-async function askPDF(chain, query) {
+async function askPDF(chain, query, user) {
   result = await chain.call({ question: query });
 
   return result.text;
-
 }
 
 /**
@@ -211,21 +236,18 @@ async function isUserAllowedForFile(file, user) {
 
 // Express middleware to verify user authorization
 async function authorizeUser(req, res, next) {
-  // Implement your authorization logic here
-  // You can use req.headers or req.session to retrieve user information
+
 
   const { file } = req.body;
   const user = { id: "1", name: "JoaoF" };
 
   const hasAccess = await checkAccessRights(file, user);
   if (hasAccess) {
-    next(); // User is authorized, proceed to the next middleware or route handler
+    next(); 
   } else {
     res.status(401).json({ message: "Unauthorized" });
   }
 }
-
-
 
 // Express route to add a file
 app.post("/files", upload.single("file"), uploadFile);
@@ -238,20 +260,26 @@ async function uploadFile(req, res) {
   const parsedUsersAllowed = users_allowed.split(",");
   const parsedRoomIds = room_ids.split(",");
 
-  const fileName = req.file.filename;
+  const filename = req.file.originalname;
+
 
   const id = uuidv4();
 
-  try {
-    createEmbeddingsRedis(fileName);
+  const metaInfo = {
+    file: req.file,
+    room_ids: parsedRoomIds,
+    roles_allowed: parsedRolesAllowed,
+    filename: filename,
+  };
 
-    // Perform file saving logic here
-    // Use the extracted information to create a new document in MongoDB
+  try {
+    createEmbeddingsRedis(metaInfo);
+
 
     const document = new Document({
       id,
-      file: fileName,
-      index_id: getFilename(fileName),
+      file: filename,
+      index_id: filename,
       room_ids: parsedRoomIds,
       roles_allowed: parsedRolesAllowed,
       users_allowed: parsedUsersAllowed,
@@ -266,11 +294,12 @@ async function uploadFile(req, res) {
   }
 }
 
-
-
 // Express route to perform similarity search with authorization
-app.post("/files/ask", authorizeUser, async (req, res) => {
-  const { file, question } = req.body;
+app.post("/files/ask", async (req, res) => {
+  const { roomId, question } = req.body;
+
+  //validate user
+  const user = { role: "admin", room: 12 };
 
   try {
     // Save the file content or perform necessary operations
@@ -279,8 +308,8 @@ app.post("/files/ask", authorizeUser, async (req, res) => {
     // Wait for the FaissStore to be loaded before performing the search
 
     //const vectorStore = await loadRedisVectorStore(file);
-    const chain = await getFileChain(file);
-    const results = await askPDF(chain, question);
+    const chain = await getFileChain(roomId);
+    const results = await askPDF(chain, question, user);
 
     res.status(200).json({ results });
   } catch (error) {
